@@ -1,0 +1,26 @@
+
+use core.net.http.cli;;
+use core.2d.font;;
+use core.2d.png;;
+
+
+const WindowTitle = "Subway Ad Display";;
+const WIDTH  =  320;;
+const HEIGHT = 1024;;
+
+const Delay_ms = 5000;;
+const PngFiles = { "pic1.png" "pic2.png" "pic3.png" };;
+const Images = arrayMap PngFiles (lambda x = bitmapFromPng load x );;
+const ImagesCount = arrayLength Images;;
+
+fun displayImage index = 
+	let index % ImagesCount -> i in
+		bitmapBlit uiBuffer 0 0 Images.i 0 0 WIDTH HEIGHT BLEND_ALPHA;
+		uiUpdate;
+		onTimeout Delay_ms (lambda = displayImage index+1);;
+
+fun run =
+	echoLn "Starting ...";
+	uiStart 0 0 WIDTH HEIGHT nil WindowTitle;
+	displayImage 0;;
+
