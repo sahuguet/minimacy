@@ -1,3 +1,6 @@
+# Minimacy Cheat Sheet :construction:
+
+This is a list of examples to better understand the Minimacy langauge constructs. See https://minimacy.net/book/#//tm:0 for more details.
 
 Note: `]` is the prefix used to show what you type. The rest is returned by the Minimacy compiler/interpreter.
 
