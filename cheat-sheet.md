@@ -2,7 +2,7 @@
 
 This is a list of examples to better understand the Minimacy language constructs. See https://minimacy.net/book/#//tm:0 for more details.
 
-Note: `]` is the prefix used to show what you type. The rest is returned by the Minimacy compiler/interpreter. All examples are run against using `minimacy topLevel.mcy`. See [here](https://minimacy.net/book/#/page/page:369,tag$:toc_2,tm:0) for your proper setup, if needed.
+All examples are run against the Minimacy top-level REPL (`topLevel.mcy`). You can launch it by running `minimacy topLevel.mcy` from the command line. See [here](https://minimacy.net/book/#/page/page:369,tag$:toc_2,tm:0) for your proper setup, if needed. In the examples below, `]` is the prefix used to show what you type (you don't have to type it). The rest is returned by the Minimacy compiler/interpreter.
  
 
 ## Lists
