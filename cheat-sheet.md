@@ -8,7 +8,7 @@ Note: `]` is the prefix used to show what you type. The rest is returned by the 
 
 ## Dictionaries (aka hashmap)
 
-### New empty dictionary
+### New empty dictionary using `hashmapCreate`
 You can create an empty dictionary, which comes with a generic (aka weak) type `a1 -> a2`.
 
 ```
@@ -35,7 +35,7 @@ Once you you insert your first element, a proper type gets assigned, e.g. `Str -
 }
 ```
 
-### New dictionary with some elements
+### New dictionary with some elements using `hashmapInit`
 You can also create dictionary with a list of key-value pairs.
 
 ```
@@ -72,7 +72,7 @@ hashmapInit 10 nil
 }
 ```
 
-### get/set/count
+### get/set/count using `hashmapGet`, `hashmapSet` and `hashmapCount`
 
 ```
 ] const D = hashmapInit 10 ["pizza" 5]:["ice cream" 7]:nil ; echoLn (hashmapGet D "pizza")
