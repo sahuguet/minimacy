@@ -78,9 +78,117 @@ You extract the first element of the list using `head`. You extract the rest (ak
 You can find more details at https://minimacy.net/book/#/page/page:205 .
 
 
-## Arrays (coming soon)
+## Arrays
+An array is an ordered set of elements:
+- all elements have the same type
+- elements can be modified
+- but **the size of the set cannot be changed**
 
 
+If you need to change the size of the set, use a list instead.
+
+Minimacy uses `.i` instead of `[i]` to extract the array element at index `i`. 
+
+### Constructing an array (1/3): by hand
+
+There is a built-in syntax for array, using curly braces.
+```
+] {1 2 3}
+-> array Int: #3 {
+   0:
+     Int: 1 (0x1)
+   1:
+     Int: 2 (0x2)
+   2:
+     Int: 3 (0x3)
+}
+``` 
+
+All elements must be of the same type.
+```
+] {1 2 "3"}
+
+> Compiler error: 'Str' does not match with 'Int'
+```
+
+### Constructing an array (2/3): using `arrayCreate` with a default value
+
+You can construct an array by specifyting the size and a default value.
+```
+] arrayCreate 5 "TBD"
+-> array Str: #5 {
+   0:
+     Str: "TBD"
+   1:
+     Str: "TBD"
+   2:
+     Str: "TBD"
+   3:
+     Str: "TBD"
+   4:
+     Str: "TBD"
+}
+```
+
+### Constructing an array (2/3): using `arrayInit` with a function
+You can construct an array by specifyting the size and a function.
+
+```
+] const A1 = arrayInit 5 (lambda x= 2*x)
+-> a1: CONST A1
+     Type: array Int
+      array #5 {
+       0:
+         Int: 0 (0x0)
+       1:
+         Int: 2 (0x2)
+       2:
+         Int: 4 (0x4)
+       3:
+         Int: 6 (0x6)
+       4:
+         Int: 8 (0x8)
+    }
+```
+
+### Deconstructing an array using `.`
+
+We get the first element and the last element, as an array. You can put an arbitrary complex expression after the `.`, but you need to use parenthesis.
+```
+] {A1.0 A1.((arrayLength A1) -1)}
+-> array Int: #2 {
+   0:
+     Int: 0 (0x0)
+   1:
+     Int: 8 (0x8)
+}
+```
+
+### Deconstructing an array using `arraySlice`
+
+To get the first 2 elements
+```
+] arraySlice A1 0 2
+-> array Int: #2 {
+   0:
+     Int: 0 (0x0)
+   1:
+     Int: 2 (0x2)
+}
+```
+
+To get the last 2 elements (note: we need to put `-2` between parenthesis to make the compiler happy)
+```
+] arraySlice A1 (-2) nil
+-> array Int: #2 {
+   0:
+     Int: 6 (0x6)
+   1:
+     Int: 8 (0x8)
+}
+```
+
+See https://minimacy.net/book/#/page/page:169 for more info.
 
 ## Dictionaries (aka hashmap)
 
