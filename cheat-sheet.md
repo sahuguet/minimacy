@@ -1,6 +1,6 @@
 # Minimacy Cheat Sheet :construction:
 
-This is a list of examples to better understand the Minimacy langauge constructs. See https://minimacy.net/book/#//tm:0 for more details.
+This is a list of examples to better understand the Minimacy language constructs. See https://minimacy.net/book/#//tm:0 for more details.
 
 Note: `]` is the prefix used to show what you type. The rest is returned by the Minimacy compiler/interpreter. All examples are run against using `minimacy topLevel.mcy`. See [here](https://minimacy.net/book/#/page/page:369,tag$:toc_2,tm:0) for your proper setup, if needed.
  
