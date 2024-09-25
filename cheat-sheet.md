@@ -2,9 +2,85 @@
 Note: `]` is the prefix used to show what you type. The rest is returned by the Minimacy compiler/interpreter.
 
 
-## Lists (coming soon)
+## Lists
+
+List are represented as the head (the first element from the list) followed by the tail (the rest of the list). `nil` is used to represent the empty list.
+
+### Constructing a list
+
+You can create list using using the `:` operator. Note that a list must always end with `nil`.
+```
+] 1:2:nil
+-> list Int:
+   Int: 1 (0x1)
+   Int: 2 (0x2)
+```
+
+Also, all elements of the list must be of the same type.
+```
+] 1:"2":nil
+
+> Compiler error: 'Int' does not match with 'Str'
+```
+
+You can add an element to the head of the list using `:`.
+```
+] const A = 1:2:3:nil
+-> a1: CONST A
+     Type: list Int
+     list:
+       Int: 1 (0x1)
+       Int: 2 (0x2)
+       Int: 3 (0x3)
+] 0:A
+-> list Int:
+   Int: 0 (0x0)
+   Int: 1 (0x1)
+   Int: 2 (0x2)
+   Int: 3 (0x3)
+```
+
+To add an element at the end of the list you can use `listConcat`.
+```
+] listConcat A 4:nil
+-> list Int:
+   Int: 1 (0x1)
+   Int: 2 (0x2)
+   Int: 3 (0x3)
+   Int: 4 (0x4)
+```
+
+### Deconstructing a list
+
+You extract the first element of the list using `head`. You extract the rest (aka tail) of the list using `tail`. You can extract an element at a given `index` using `listGet`. If there is no such element, the function returns `nil`.
+
+```
+] head A
+-> Int: 1 (0x1)
+
+] tail A
+-> list Int:
+   Int: 2 (0x2)
+   Int: 3 (0x3)
+
+] listGet A 0
+-> Int: 1 (0x1)         // Same as head A
+
+] listGet A 2
+-> Int: 3 (0x3)
+
+] listGet A 3           // no such element --> nil
+-> Int:  nil
+```
+
+### Mapping functions
+
+You can find more details at https://minimacy.net/book/#/page/page:205 .
+
 
 ## Arrays (coming soon)
+
+
 
 ## Dictionaries (aka hashmap)
 
