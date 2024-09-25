@@ -1,2 +1,2 @@
 # minimacy
-Some code examples for Minimacy
+Some code examples for [Minimacy](https://github.com/ambermind/minimacy).
