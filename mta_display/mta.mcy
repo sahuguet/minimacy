@@ -19,7 +19,7 @@ const COLOR_TITLE=0xc0c080;;
 
 const SUBWAY_LINE_LOGOS = hashmapInit 2 listFromArray arrayMap {"A" "B" "C" "D"} (lambda x = [x bitmapFromPng load (strFormat "icons/subway_line_*.png" x) ]);;
 
-const FontText = fontFromBitmap (bitmapFromPng load "JetBrains Mono_80_256.png");;
+const FontText = fontFromBitmap (bitmapFromPng load "fonts/JetBrains Mono_80_256.png");;
 
 
 const BoardTitle="Train schedule at 125th st station";;
