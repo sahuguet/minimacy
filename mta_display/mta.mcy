@@ -35,16 +35,18 @@ fun displayTrain index line destination departureTime =
     );
     uiUpdate;;
 
-fun run =
-	echoLn "Starting ...";
-    uiStart 0 0 WIDTH HEIGHT nil BoardTitle;
-    bitmapErase uiBuffer COLOR_BACKGROUND;
+const REFRESH_MILLISECONDS = 30000;;
+
+fun refresh = 
+    set Index = 0;
+    echoLn "Refreshing ...";
     let httpGet12 URL -> data in
     //let load "train_schedule.json" -> data in
     // TODO: handle case where the server is down.
         let jsonParse data 0 -> [json next] in (
             let (jsonFieldGet json "trains") -> trains in (
                 //echoLn jsonEncodePretty trains;
+                bitmapErase uiBuffer COLOR_BACKGROUND;
                 for x in jsonListGet trains do (
                    let [
                         (jsonStringGet jsonFieldGet x "line")
@@ -59,10 +61,18 @@ fun run =
                 )
             )
         );
+    onTimeout REFRESH_MILLISECONDS (lambda = refresh);;
 
+    
+
+fun run =
+	echoLn "Starting ...";
+    uiStart 0 0 WIDTH HEIGHT nil BoardTitle;
+    refresh;
 	uiUpdate;;
 
 
     // TODOs
-    // 1. add auto-refresh every min
-    // 2. add error handling
+    // 1. add auto-refresh every min     [X]
+    // 2. add error handling             [ ]
+    // 3. board title coming from feed   [ ]
