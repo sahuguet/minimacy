@@ -1,0 +1,40 @@
+{
+    "name": "125 St",
+    "trains": [
+        {
+            "line": "D",
+            "direction": "Uptown and The Bronx",
+            "track": "A4",
+            "destination": "Norwood-205 St",
+            "departureTime": "1728533875"
+        },
+        {
+            "line": "A",
+            "direction": "Uptown and The Bronx",
+            "track": "A4",
+            "destination": "Inwood-207 St",
+            "departureTime": "1728534140"
+        },
+        {
+            "line": "D",
+            "direction": "Uptown and The Bronx",
+            "track": "A4",
+            "destination": "Norwood-205 St",
+            "departureTime": "1728534425"
+        },
+        {
+            "line": "D",
+            "direction": "Uptown and The Bronx",
+            "track": "A4",
+            "destination": "Norwood-205 St",
+            "departureTime": "1728535041"
+        },
+        {
+            "line": "A",
+            "direction": "Uptown and The Bronx",
+            "track": "A4",
+            "destination": "Inwood-207 St",
+            "departureTime": "1728535274"
+        }
+    ]
+}

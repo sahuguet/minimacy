@@ -1,0 +1,68 @@
+use core.net.http.cli;;
+use core.util.json;;
+use core.2d.png;;
+use core.2d.font;;
+
+const URL = "http://127.0.0.1:8000/stop/A15N";;
+
+const WIDTH=1200;;
+const HEIGHT=360;;
+const MARGIN_X=15;;
+const MARGIN_Y=10;;
+const ROW_HEIGHT=40;;
+
+
+const COLOR_BACKGROUND=0xFFFFFF;; // white color 0x
+const COLOR_TEXT=0x000000;;
+const COLOR_SEPARATOR=0x808080;;
+const COLOR_TITLE=0xc0c080;;
+
+const SUBWAY_LINE_LOGOS = hashmapInit 2 listFromArray arrayMap {"A" "B" "C" "D"} (lambda x = [x bitmapFromPng load (strFormat "icons/subway_line_*.png" x) ]);;
+
+const FontText = fontFromBitmap (bitmapFromPng load "JetBrains Mono_80_256.png");;
+
+
+const BoardTitle="Train schedule at 125th st station";;
+
+var Index = 0;;
+
+fun displayTrain index line destination departureTime =
+    let (intFromDec departureTime) - time -> waitTimeSeconds in
+    let  waitTimeSeconds / 60 -> waitTimeMinutes in  (
+    echoLn strConcat (strConcat line  (strConcat  " : " strBuild waitTimeMinutes ) ) " min";
+    bitmapBlit uiBuffer 10 (110*index) + 10 (hashmapGet SUBWAY_LINE_LOGOS line) 0 0 100 100 BLEND_ALPHA;
+    bitmapTextU8 uiBuffer  200 (110*index) + 15 ALIGN_LEFT (strFormat "* in * min" destination waitTimeMinutes) FontText COLOR_TEXT nil
+    );
+    uiUpdate;;
+
+fun run =
+	echoLn "Starting ...";
+    uiStart 0 0 WIDTH HEIGHT nil BoardTitle;
+    bitmapErase uiBuffer COLOR_BACKGROUND;
+    let httpGet12 URL -> data in
+    //let load "train_schedule.json" -> data in
+    // TODO: handle case where the server is down.
+        let jsonParse data 0 -> [json next] in (
+            let (jsonFieldGet json "trains") -> trains in (
+                //echoLn jsonEncodePretty trains;
+                for x in jsonListGet trains do (
+                   let [
+                        (jsonStringGet jsonFieldGet x "line")
+                        (jsonStringGet jsonFieldGet x "direction")
+                        (jsonStringGet jsonFieldGet x "track")
+                        (jsonStringGet jsonFieldGet x "destination")
+                        (jsonStringGet jsonFieldGet x "departureTime")
+                    ]    -> [line direction track destination departureTime] in (
+                    displayTrain Index line destination departureTime;
+                    );
+                    set Index = Index + 1;
+                )
+            )
+        );
+
+	uiUpdate;;
+
+
+    // TODOs
+    // 1. add auto-refresh every min
+    // 2. add error handling
