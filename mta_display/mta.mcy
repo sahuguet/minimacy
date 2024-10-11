@@ -6,7 +6,7 @@ use core.2d.font;;
 const URL = "http://127.0.0.1:8000/stop/A15N";;
 
 const WIDTH=1200;;
-const HEIGHT=360;;
+const HEIGHT=600;;
 const MARGIN_X=15;;
 const MARGIN_Y=10;;
 const ROW_HEIGHT=40;;
@@ -14,24 +14,34 @@ const ROW_HEIGHT=40;;
 
 const COLOR_BACKGROUND=0xFFFFFF;; // white color 0x
 const COLOR_TEXT=0x000000;;
-const COLOR_SEPARATOR=0x808080;;
+const COLOR_SEPARATOR=0x000000;;
 const COLOR_TITLE=0xc0c080;;
 
 const SUBWAY_LINE_LOGOS = hashmapInit 2 listFromArray arrayMap {"A" "B" "C" "D"} (lambda x = [x bitmapFromPng load (strFormat "icons/subway_line_*.png" x) ]);;
 
-const FontText = fontFromBitmap (bitmapFromPng load "fonts/JetBrains Mono_80_256.png");;
+const L_ARROW = bitmapFromPng load "icons/left-arrow-50px.png";;
+const R_ARROW = bitmapFromPng load "icons/right-arrow-50px.png";;
+
+// const FontText = fontFromBitmap (bitmapFromPng load "fonts/JetBrains Mono_80_256.png");;
+const FontText = fontFromBitmap (bitmapFromPng load "fonts/Helvetica_80_256.png");;
 
 
-const BoardTitle="Train schedule at 125th st station";;
+const BoardTitle="--- Train schedule at 125th st station ---";;
 
 var Index = 0;;
 
 fun displayTrain index line destination departureTime =
-    let (intFromDec departureTime) - time -> waitTimeSeconds in
-    let  waitTimeSeconds / 60 -> waitTimeMinutes in  (
+    let ((intFromDec departureTime) - time) / 60 -> waitTimeMinutes in
+    (
     echoLn strConcat (strConcat line  (strConcat  " : " strBuild waitTimeMinutes ) ) " min";
-    bitmapBlit uiBuffer 10 (110*index) + 10 (hashmapGet SUBWAY_LINE_LOGOS line) 0 0 100 100 BLEND_ALPHA;
-    bitmapTextU8 uiBuffer  200 (110*index) + 15 ALIGN_LEFT (strFormat "* in * min" destination waitTimeMinutes) FontText COLOR_TEXT nil
+    bitmapBlit uiBuffer 10 (110*index) + 35 L_ARROW 0 0 100 100 BLEND_ALPHA;
+    bitmapFillRectangle uiBuffer 0 index*110 WIDTH 2 COLOR_SEPARATOR nil;
+    bitmapBlit uiBuffer 130 (110*index) + 10 (hashmapGet SUBWAY_LINE_LOGOS line) 0 0 100 100 BLEND_ALPHA;
+    bitmapTextU8 uiBuffer  80  110*index+15 ALIGN_LEFT (strFormat "*." index+1) FontText COLOR_TEXT nil;
+    bitmapTextU8 uiBuffer  250 (110*index)+ 15 ALIGN_LEFT destination FontText COLOR_TEXT nil;
+    let (if waitTimeMinutes == 0 then "<1" else strBuild waitTimeMinutes) -> waitTime in
+    bitmapTextU8 uiBuffer  (WIDTH-50) (110*index)+15 ALIGN_RIGHT (strFormat "* min" waitTime) FontText COLOR_TEXT nil;
+    bitmapFillRectangle uiBuffer 0 (index+1)*110 WIDTH 2 COLOR_SEPARATOR nil;
     );
     uiUpdate;;
 
@@ -69,6 +79,7 @@ fun run =
 	echoLn "Starting ...";
     uiStart 0 0 WIDTH HEIGHT nil BoardTitle;
     refresh;
+    //bitmapFillRectangle uiBuffer 0 0 5 5 COLOR_SEPARATOR nil;
 	uiUpdate;;
 
 
