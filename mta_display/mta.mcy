@@ -22,9 +22,8 @@ const SUBWAY_LINE_LOGOS = hashmapInit 2 listFromArray arrayMap {"A" "B" "C" "D"}
 const L_ARROW = bitmapFromPng load "icons/left-arrow-50px.png";;
 const R_ARROW = bitmapFromPng load "icons/right-arrow-50px.png";;
 
-// const FontText = fontFromBitmap (bitmapFromPng load "fonts/JetBrains Mono_80_256.png");;
 const FontText = fontFromBitmap (bitmapFromPng load "fonts/Helvetica_80_256.png");;
-
+const FontFooter = fontFromBitmap (bitmapFromPng load "fonts/Helvetica_20_256.png");;
 
 const BoardTitle="--- Train schedule at 125th st station ---";;
 
@@ -46,6 +45,23 @@ fun displayTrain index line destination departureTime =
     uiUpdate;;
 
 const REFRESH_MILLISECONDS = 30000;;
+
+
+fun mta_time t=
+    if t>=0 then
+    let date t -> [y month d w h m s] in
+    strFormat "*, * * * *:*:* ET"
+        Days.w (decNFromInt 2 d) Months.(month-1) (decNFromInt 4 y) (decNFromInt 2 (h-4)) (decNFromInt 2 m) (decNFromInt 2 s);;
+
+fun showTime =
+    bitmapFillRectangle uiBuffer 0 HEIGHT-30 WIDTH 30 0xffffff nil;
+    echoLn "Showing time ...";
+    let mta_time time -> nowTime in (
+    bitmapTextU8 uiBuffer  10 HEIGHT-30 ALIGN_LEFT (strFormat "As of *" nowTime) FontFooter 0x0 nil;
+    uiUpdate;
+    );
+    onTimeout 1000 (lambda = showTime);;
+
 
 fun refresh = 
     set Index = 0;
@@ -73,13 +89,16 @@ fun refresh =
         );
     onTimeout REFRESH_MILLISECONDS (lambda = refresh);;
 
-    
+
+var StationID @Str;;
+var StationName @Str;;
 
 fun run =
-	echoLn "Starting ...";
+    set StationID = head tail args;
+	echoLn strFormat "Starting Digital Signage for *." StationID;
     uiStart 0 0 WIDTH HEIGHT nil BoardTitle;
     refresh;
-    //bitmapFillRectangle uiBuffer 0 0 5 5 COLOR_SEPARATOR nil;
+    showTime;
 	uiUpdate;;
 
 
