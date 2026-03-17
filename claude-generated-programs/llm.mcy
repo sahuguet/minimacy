@@ -1,0 +1,127 @@
+// LLM CLI - OpenAI-compatible API client
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Usage:
+//   minimacyMac llm.mcy --key <API_KEY> [--url <BASE_URL>] [--model <MODEL>] [prompt]
+//
+// Without a prompt → interactive chat mode (type 'exit' to quit)
+// With a prompt    → single-shot mode, prints the reply and exits
+//
+// Defaults (override with flags):
+//   --url   https://api.openai.com/v1
+//   --model gpt-4o-mini
+
+use core.util.json;;
+use core.net.http.cli;;
+
+const DEFAULT_BASE_URL="https://api.openai.com/v1";;
+const DEFAULT_MODEL="gpt-4o-mini";;
+
+//---------- argument parsing ----------
+
+// Returns [baseUrl, apiKey, model, promptParts]
+// promptParts is a reversed list of non-flag args that form the inline prompt
+fun parseArgs(l, url, key, model, parts)=
+    if l==nil then [url, key, model, parts]
+    else let head(l)->a in let tail(l)->rest in
+    if a=="--url" && rest<>nil then parseArgs(tail(rest), head(rest), key, model, parts)
+    else if a=="--key" && rest<>nil then parseArgs(tail(rest), url, head(rest), model, parts)
+    else if a=="--model" && rest<>nil then parseArgs(tail(rest), url, key, head(rest), parts)
+    else parseArgs(rest, url, key, model, a::parts);;
+
+//---------- JSON helpers ----------
+
+// Convert a [role, content] pair to a JSON object
+fun msgToJson(msg)=
+    let msg->[role, content] in
+    jsonObject (["role", jsonString role]::["content", jsonString content]::nil);;
+
+// Build the POST body for /chat/completions
+// messages: list of [role, content] in chronological order
+fun buildBody(messages, model)=
+    jsonEncode(jsonObject (
+        ["model", jsonString model]::
+        ["messages", jsonList(listMap(messages, #msgToJson))]::
+        nil
+    ));;
+
+// Extract the reply text from the raw JSON response body
+fun extractReply(body)=
+    try
+    let jsonParse(body, 0)->[json, _] in
+    let jsonFieldGet(json, "choices")->choices in
+    let jsonArrayGet(choices)->arr in
+    if 0<arrayLength(arr) then
+    let jsonFieldGet(arr[0], "message")->msg in
+    let jsonFieldGet(msg, "content")->content in
+    jsonStringGet(content);;
+
+//---------- HTTP ----------
+
+// Send messages to the API and return the assistant reply (or nil on error)
+// messages: list of [role, content] in chronological order
+fun sendRequest(baseUrl, apiKey, model, messages)=
+    let strBuild({baseUrl, "/chat/completions"})->url in
+    let httpCreate("POST", url, "HTTP/1.0")->h in
+    (
+        httpSetHeader(h, "Content-Type", "application/json");
+        httpSetHeader(h, "Authorization", strBuild({"Bearer ", apiKey}));
+        httpSetPostData(h, buildBody(messages, model));
+        let await(lambda(join)=
+            httpSend(h, lambda(code, data)= joinSend(join, [code, data]))
+        )->[code, data] in
+        if code==nil then (echoLn "[Error: connection failed]"; nil)
+        else if code<>200 then (echoLn ["[Error HTTP ", decFromInt(code), ": ", data, "]"]; nil)
+        else extractReply(data)
+    );;
+
+//---------- interactive chat loop ----------
+
+// history: list of [role, content], stored newest-first (reversed)
+fun chatLoop(baseUrl, apiKey, model, history)=
+    onPrompt("You: ", lambda(input)=
+        if input<>nil then
+        if input=="exit" || input=="quit" then
+            (echoLn "Bye."; silentPrompt(); 0)
+        else
+        (
+            let ["user", input]::history->history in
+            let sendRequest(baseUrl, apiKey, model, listReverse(history))->reply in
+            (
+                if reply<>nil then echoLn ["Assistant: ", reply];
+                chatLoop(baseUrl, apiKey, model,
+                    if reply<>nil then ["assistant", reply]::history else history
+                );
+                0
+            )
+        )
+    );;
+
+//---------- entry point ----------
+
+fun main()=
+    let parseArgs(args(), DEFAULT_BASE_URL, nil, DEFAULT_MODEL, nil)->[baseUrl, apiKey, model, parts] in
+    if apiKey==nil then
+    (
+        echoLn "Usage: minimacyMac llm.mcy --key <KEY> [--url <URL>] [--model <MODEL>] [prompt]";
+        echoLn ["  Default URL   : ", DEFAULT_BASE_URL];
+        echoLn ["  Default model : ", DEFAULT_MODEL];
+        0
+    )
+    else
+    (
+        let if parts<>nil then strJoin(" ", listReverse(parts))->prompt in
+        if prompt<>nil then
+        (
+            let sendRequest(baseUrl, apiKey, model, ["user", prompt]::nil)->reply in
+            if reply<>nil then echoLn reply;
+            0
+        )
+        else
+        (
+            echoLn ["LLM Client | model: ", model, " | ", baseUrl];
+            echoLn "Type 'exit' or 'quit' to stop, Ctrl-D to send EOF.";
+            chatLoop(baseUrl, apiKey, model, nil);
+            0
+        )
+    );;

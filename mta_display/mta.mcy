@@ -21,6 +21,8 @@ const SUBWAY_LINE_LOGOS = hashmapInit 2 listFromArray arrayMap {"A" "B" "C" "D"}
 
 const L_ARROW = bitmapFromPng load "icons/left-arrow-50px.png";;
 const R_ARROW = bitmapFromPng load "icons/right-arrow-50px.png";;
+const OOPS = bitmapFromPng load "oops.png";;
+
 
 const FontText = fontFromBitmap (bitmapFromPng load "fonts/Helvetica_80_256.png");;
 const FontFooter = fontFromBitmap (bitmapFromPng load "fonts/Helvetica_20_256.png");;
@@ -55,18 +57,43 @@ fun mta_time t=
 
 fun showTime =
     bitmapFillRectangle uiBuffer 0 HEIGHT-30 WIDTH 30 0xffffff nil;
-    echoLn "Showing time ...";
     let mta_time time -> nowTime in (
-    bitmapTextU8 uiBuffer  10 HEIGHT-30 ALIGN_LEFT (strFormat "As of *" nowTime) FontFooter 0x0 nil;
+    bitmapTextU8 uiBuffer  WIDTH-100 HEIGHT-30 ALIGN_RIGHT (strFormat "As of *" nowTime) FontFooter 0x0 nil;
     uiUpdate;
     );
     onTimeout 1000 (lambda = showTime);;
 
+fun centerImage img @Bitmap =
+    let [
+        (uiW - (bitmapW img)) / 2
+        (uiH - (bitmapH img)) / 2
+        (bitmapW img)
+        (bitmapH img)
+    ] -> [x y width height] in
+    bitmapBlit uiBuffer x y img 0 0 width height BLEND_ALPHA;;
+
+fun showOops = 
+    echoLn "Oops";
+    //bitmapBlit uiBuffer 0 0 OOPS 0 0 612 437 BLEND_ALPHA;
+    centerImage OOPS;
+    uiUpdate;;
+
+fun myHttpGet url=
+	let httpCreate nil url "HTTP/1.0" -> h in (
+        httpSetTimeout h 2000;
+        await (lambda join=
+		httpSend h (lambda code data= joinSend join data)
+	)
+    );;
 
 fun refresh = 
     set Index = 0;
     echoLn "Refreshing ...";
-    let httpGet12 URL -> data in
+    let myHttpGet URL -> data in (
+        echoLn "Data received";
+        if data == nil then 
+            showOops
+        else (
     //let load "train_schedule.json" -> data in
     // TODO: handle case where the server is down.
         let jsonParse data 0 -> [json next] in (
@@ -86,7 +113,9 @@ fun refresh =
                     set Index = Index + 1;
                 )
             )
-        );
+        )
+        )
+    );
     onTimeout REFRESH_MILLISECONDS (lambda = refresh);;
 
 
@@ -97,12 +126,12 @@ fun run =
     set StationID = head tail args;
 	echoLn strFormat "Starting Digital Signage for *." StationID;
     uiStart 0 0 WIDTH HEIGHT nil BoardTitle;
-    refresh;
-    showTime;
+    refresh; showTime;
 	uiUpdate;;
 
 
     // TODOs
     // 1. add auto-refresh every min     [X]
-    // 2. add error handling             [ ]
+    // 2. add error handling             [Xj]
     // 3. board title coming from feed   [ ]
+    // 4. splash page screen             [ ]

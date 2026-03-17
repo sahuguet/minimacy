@@ -1,0 +1,121 @@
+// Claude CLI - Anthropic API client
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Usage:
+//   minimacyMac llm_claude.mcy --key <API_KEY> [--model <MODEL>] [--tokens <N>] [prompt]
+//
+// Without a prompt → interactive chat mode (type 'exit' to quit)
+// With a prompt    → single-shot mode, prints the reply and exits
+
+use core.util.json;;
+use core.net.http.cli;;
+
+const ANTHROPIC_URL="https://api.anthropic.com/v1/messages";;
+const ANTHROPIC_VERSION="2023-06-01";;
+const DEFAULT_MODEL="claude-opus-4-6";;
+const DEFAULT_MAX_TOKENS=1024;;
+
+//---------- argument parsing ----------
+
+// Returns [apiKey, model, maxTokens, promptParts]
+fun parseArgs(l, key, model, maxTokens, parts)=
+    if l==nil then [key, model, maxTokens, parts]
+    else let head(l)->a in let tail(l)->rest in
+    if a=="--key"    && rest<>nil then parseArgs(tail(rest), head(rest), model, maxTokens, parts)
+    else if a=="--model"  && rest<>nil then parseArgs(tail(rest), key, head(rest), maxTokens, parts)
+    else if a=="--tokens" && rest<>nil then parseArgs(tail(rest), key, model, intFromDec(head(rest)), parts)
+    else parseArgs(rest, key, model, maxTokens, a::parts);;
+
+//---------- JSON helpers ----------
+
+fun msgToJson(msg)=
+    let msg->[role, content] in
+    jsonObject (["role", jsonString role]::["content", jsonString content]::nil);;
+
+// Anthropic requires "model", "max_tokens", and "messages"
+fun buildBody(messages, model, maxTokens)=
+    jsonEncode(jsonObject (
+        ["model",      jsonString model]::
+        ["max_tokens", jsonInt(maxTokens)]::
+        ["messages",   jsonList(listMap(messages, #msgToJson))]::
+        nil
+    ));;
+
+// Anthropic response shape: { content: [{type:"text", text:"..."}], ... }
+fun extractReply(body)=
+    try
+    let jsonParse(body, 0)->[json, _] in
+    let jsonFieldGet(json, "content")->content in
+    let jsonArrayGet(content)->arr in
+    if 0<arrayLength(arr) then
+    let jsonFieldGet(arr[0], "text")->text in
+    jsonStringGet(text);;
+
+//---------- HTTP ----------
+
+// messages: list of [role, content] in chronological order
+fun sendRequest(apiKey, model, maxTokens, messages)=
+    let httpCreate("POST", ANTHROPIC_URL, "HTTP/1.0")->h in
+    (
+        httpSetHeader(h, "Content-Type",      "application/json");
+        httpSetHeader(h, "x-api-key",         apiKey);
+        httpSetHeader(h, "anthropic-version", ANTHROPIC_VERSION);
+        httpSetPostData(h, buildBody(messages, model, maxTokens));
+        let await(lambda(join)=
+            httpSend(h, lambda(code, data)= joinSend(join, [code, data]))
+        )->[code, data] in
+        if code==nil then (echoLn "[Error: connection failed]"; nil)
+        else if code<>200 then (echoLn ["[Error HTTP ", decFromInt(code), ": ", data, "]"]; nil)
+        else extractReply(data)
+    );;
+
+//---------- interactive chat loop ----------
+
+// history: list of [role, content], stored newest-first
+fun chatLoop(apiKey, model, maxTokens, history)=
+    onPrompt("You: ", lambda(input)=
+        if input<>nil then
+        if input=="exit" || input=="quit" then
+            (echoLn "Bye."; silentPrompt(); 0)
+        else
+        (
+            let ["user", input]::history->history in
+            let sendRequest(apiKey, model, maxTokens, listReverse(history))->reply in
+            (
+                if reply<>nil then echoLn ["Claude: ", reply];
+                chatLoop(apiKey, model, maxTokens,
+                    if reply<>nil then ["assistant", reply]::history else history
+                );
+                0
+            )
+        )
+    );;
+
+//---------- entry point ----------
+
+fun main()=
+    let parseArgs(args(), nil, DEFAULT_MODEL, DEFAULT_MAX_TOKENS, nil)->[apiKey, model, maxTokens, parts] in
+    if apiKey==nil then
+    (
+        echoLn "Usage: minimacyMac llm_claude.mcy --key <KEY> [--model <MODEL>] [--tokens <N>] [prompt]";
+        echoLn ["  Default model  : ", DEFAULT_MODEL];
+        echoLn ["  Default tokens : ", decFromInt(DEFAULT_MAX_TOKENS)];
+        0
+    )
+    else
+    (
+        let if parts<>nil then strJoin(" ", listReverse(parts))->prompt in
+        if prompt<>nil then
+        (
+            let sendRequest(apiKey, model, maxTokens, ["user", prompt]::nil)->reply in
+            if reply<>nil then echoLn reply;
+            0
+        )
+        else
+        (
+            echoLn ["Claude Chat | model: ", model, " | max_tokens: ", decFromInt(maxTokens)];
+            echoLn "Type 'exit' or 'quit' to stop.";
+            chatLoop(apiKey, model, maxTokens, nil);
+            0
+        )
+    );;

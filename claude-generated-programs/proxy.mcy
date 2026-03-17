@@ -1,0 +1,342 @@
+// HTTP Forward Proxy with rate limiting + HTTPS CONNECT tunneling
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// Usage: minimacyMac proxy.mcy [config.json]    (default: proxy.json)
+//
+// Config format:
+// {
+//   "port": 8080,
+//   "routes": [
+//     { "path": "https://api.openai.com/",    "rate": 5,  "window": 60 },
+//     { "path": "https://api.anthropic.com/", "rate": 10, "window": 60 }
+//   ]
+// }
+//
+// Two proxy modes:
+//   Plain HTTP:  GET https://api.openai.com/v1/... HTTP/1.1
+//   CONNECT:     CONNECT api.openai.com:443 HTTP/1.1  (curl --proxy, browsers)
+//
+// CONNECT URIs are matched as https://<host>:<port>/ against the route table.
+// Unmatched or rate-limited tunnels receive 403/429; all traffic is logged.
+
+use core.util.json;;
+use core.net.http.cli;;
+use core.net.dns;;
+
+//---------- per-route state ----------
+
+struct Route=[
+    _pathR,         // URL prefix to match
+    _rateR,         // max requests per window
+    _windowMsR,     // window duration in ms
+    _countR,        // request count in current window
+    _windowStartR,  // window start timestamp (ms)
+    _lockR          // mutex for thread-safe rate limiting
+];;
+
+fun routeCreate(path, rate, windowSec)=
+    [   _pathR        = path,
+        _rateR        = rate,
+        _windowMsR    = windowSec * 1000,
+        _countR       = 0,
+        _windowStartR = timeMs(),
+        _lockR        = lockCreate()
+    ];;
+
+// Thread-safe: returns true if request is allowed, false if over limit.
+fun routeAllow(r)=
+    lockSync(r._lockR, lambda()=
+        let timeMs() -> now in
+        (
+            if now >= r._windowStartR + r._windowMsR then
+            (
+                set r._countR = 0;
+                set r._windowStartR = now
+            );
+            if r._countR >= r._rateR then false
+            else ( set r._countR = r._countR + 1; true )
+        )
+    );;
+
+//---------- config ----------
+
+fun parseRoute(obj)=
+    routeCreate(
+        jsonStringGet(jsonFieldGet(obj, "path")),
+        jsonIntGet(jsonFieldGet(obj, "rate")),
+        jsonIntGet(jsonFieldGet(obj, "window"))
+    );;
+
+fun loadConfig(filename)=
+    let load(filename) -> data in
+    if data == nil then ( echoLn ["[proxy] cannot read config: ", filename]; nil )
+    else
+    let jsonParse(data, 0) -> [json, _] in
+    let jsonIntGet(jsonFieldGet(json, "port"))                          -> port in
+    let listMap(jsonListGet(jsonFieldGet(json, "routes")), #parseRoute) -> routes in
+    [port, routes];;
+
+//---------- routing ----------
+
+// Longest-prefix match over all routes.
+fun findRoute(routes, uri)=
+    let nil -> best in
+    let 0   -> bestLen in
+    (
+        for r in routes do
+        let strLength(r._pathR) -> len in
+        if len > bestLen && strStartsWith(uri, r._pathR) then
+        (   set best    = r;
+            set bestLen = len
+        );
+        best
+    );;
+
+//---------- HTTP forwarding (for plain proxy requests) ----------
+
+// Copy all request headers except hop-by-hop ones.
+fun copyHeaders(reqHeaders, hc)=
+    for [key, val] in listFromHashmap(reqHeaders) do
+    if key <> "host"              &&
+       key <> "content-length"    &&
+       key <> "connection"        &&
+       key <> "transfer-encoding" then
+        httpSetHeader(hc, key, val);;
+
+// Forward the request to the target URL; returns [code, body, content-type].
+fun forward(verb, uri, reqHeaders, body)=
+    let httpCreate(verb, uri, "HTTP/1.0") -> hc in
+    (
+        copyHeaders(reqHeaders, hc);
+        if body <> nil && strLength(body) > 0 then httpSetPostData(hc, body);
+        let await(lambda(join)=
+            httpSend(hc, lambda(code, data)= joinSend(join, [code, data]))
+        ) -> [code, data] in
+        [code, data, httpGetHeader(hc, "content-type")]
+    );;
+
+//---------- raw TCP request parsing ----------
+
+// Build a headers hashmap from the raw header section string.
+fun parseHeaders(raw)=
+    let hashmapCreate(4) -> h in
+    (
+        for line in tail(strSplit("\r\n", raw)) do
+        let strPos(line, ": ", 0) -> i in
+        if i <> nil then hashmapSet(h, strLowercase(strLeft(line, i)), strSlice(line, i+2, nil));
+        h
+    );;
+
+// Accumulate data on tcp until buf holds at least 'need' bytes, then call cb(buf).
+fun accumBody(tcp, buf, need, cb)=
+    if strLength(buf) >= need then call cb(strLeft(buf, need))
+    else
+    (
+        tcpOnEvent(tcp,
+            lambda(data)=
+                if data == nil then 0
+                else accumBody(tcp, strConcat(buf, data), need, cb),
+            nil);
+        0
+    );;
+
+// Buffer incoming data until a complete HTTP request (headers + body) is
+// available, then call cb(verb, uri, version, headers, body).
+fun readRequest(tcp, buf, cb)=
+    let strPos(buf, "\r\n\r\n", 0) -> i in
+    if i <> nil then
+    let strLeft(buf, i)       -> headerSection in
+    let strSlice(buf, i+4, nil) -> afterHeaders in
+    let strSplit("\r\n", headerSection)        -> lines in
+    let strSplit(" ", head(lines))             -> (verb::uri::version::_) in
+    let parseHeaders(headerSection)            -> headers in
+    let intFromDec(hashmapGet(headers, "content-length")) -> contentLen in
+    let if contentLen == nil then 0 else contentLen -> need in
+    accumBody(tcp, afterHeaders, need,
+        lambda(body)= call cb(verb, uri, version, headers, body))
+    else
+    (
+        tcpOnEvent(tcp,
+            lambda(data)=
+                if data == nil then 0
+                else readRequest(tcp, strConcat(buf, data), cb),
+            nil);
+        0
+    );;
+
+//---------- HTTP response building ----------
+
+fun httpStatusText(code)=
+    if      code == 200 then "OK"
+    else if code == 201 then "Created"
+    else if code == 400 then "Bad Request"
+    else if code == 401 then "Unauthorized"
+    else if code == 403 then "Forbidden"
+    else if code == 404 then "Not Found"
+    else if code == 429 then "Too Many Requests"
+    else if code == 500 then "Internal Server Error"
+    else if code == 502 then "Bad Gateway"
+    else "Error";;
+
+fun buildResponse(code, ct, body)=
+    let if body == nil then "" else body -> body in
+    strBuild({
+        "HTTP/1.1 ", decFromInt(code), " ", httpStatusText(code), "\r\n",
+        if ct <> nil then strBuild({"Content-Type: ", ct, "\r\n"}) else "",
+        "Content-Length: ", decFromInt(strLength(body)), "\r\n",
+        "\r\n",
+        body
+    });;
+
+//---------- CONNECT tunnel ----------
+
+// Bidirectional raw-byte relay between two TCP connections.
+fun tunnel(tcp1, tcp2)=
+    tcpOnEvent(tcp1,
+        lambda(data)=
+            if data == nil then ( tcpClose(tcp2); 0 )
+            else ( tcpWrite(tcp2, data, 0); 0 ),
+        nil);
+    tcpOnEvent(tcp2,
+        lambda(data)=
+            if data == nil then ( tcpClose(tcp1); 0 )
+            else ( tcpWrite(tcp1, data, 0); 0 ),
+        nil);
+    0;;
+
+fun handleConnect(clientTcp, host, portStr, routes)=
+    let intFromDec(portStr) -> port in
+    // Normalise to https://host/ (or https://host:port/ for non-443) for route matching
+    let if port == 443 then strBuild({"https://", host, "/"})
+        else strBuild({"https://", host, ":", portStr, "/"}) -> uri in
+    let findRoute(routes, uri) -> route in
+    if route == nil then
+    (
+        echoLn ["403 CONNECT ", host, ":", portStr];
+        tcpWrite(clientTcp, "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n", 0);
+        tcpClose(clientTcp);
+        0
+    )
+    else if !routeAllow(route) then
+    (
+        echoLn ["429 CONNECT ", host, ":", portStr,
+                " (", decFromInt(route._rateR), " req/",
+                decFromInt(route._windowMsR / 1000), "s exceeded)"];
+        tcpWrite(clientTcp, "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n", 0);
+        tcpClose(clientTcp);
+        0
+    )
+    else
+    (
+        echoLn ["CONNECT ", host, ":", portStr];
+        dnsRequest(host, lambda(ip)=
+            if ip == nil then
+            (
+                echoLn ["  -> 502 DNS failed for ", host];
+                tcpWrite(clientTcp, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n", 0);
+                tcpClose(clientTcp);
+                0
+            )
+            else
+            let tcpOpen(ip, port) -> upstreamTcp in
+            if upstreamTcp == nil then
+            (
+                echoLn ["  -> 502 connect failed: ", host, ":", portStr];
+                tcpWrite(clientTcp, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n", 0);
+                tcpClose(clientTcp);
+                0
+            )
+            else
+            (
+                echoLn ["  -> 200 tunnel established"];
+                tcpWrite(clientTcp, "HTTP/1.1 200 Connection Established\r\n\r\n", 0);
+                tunnel(clientTcp, upstreamTcp)
+            )
+        );
+        0
+    );;
+
+//---------- plain HTTP proxy ----------
+
+fun handleHttp(clientTcp, verb, uri, headers, body, routes)=
+    let findRoute(routes, uri) -> route in
+    if route == nil then
+    (
+        echoLn ["403 ", verb, " ", uri];
+        tcpWrite(clientTcp,
+            buildResponse(403, "application/json", "{\"error\":\"forbidden\"}"), 0);
+        tcpClose(clientTcp);
+        0
+    )
+    else if !routeAllow(route) then
+    (
+        echoLn ["429 ", verb, " ", uri,
+                " (", decFromInt(route._rateR), " req/",
+                decFromInt(route._windowMsR / 1000), "s exceeded)"];
+        tcpWrite(clientTcp,
+            buildResponse(429, "application/json", "{\"error\":\"rate limit exceeded\"}"), 0);
+        tcpClose(clientTcp);
+        0
+    )
+    else
+    (
+        echoLn [verb, " ", uri];
+        let forward(verb, uri, headers, body) -> [code, data, ct] in
+        if code == nil then
+        (
+            tcpWrite(clientTcp,
+                buildResponse(502, "application/json", "{\"error\":\"upstream unreachable\"}"), 0);
+            tcpClose(clientTcp);
+            0
+        )
+        else
+        (
+            tcpWrite(clientTcp, buildResponse(code, ct, data), 0);
+            tcpClose(clientTcp);
+            0
+        )
+    );;
+
+//---------- connection dispatcher ----------
+
+fun handleConnection(clientTcp, routes)=
+    readRequest(clientTcp, "",
+        lambda(verb, uri, version, headers, body)=
+        if verb == "CONNECT" then
+            let strPos(uri, ":", 0) -> i in
+            if i == nil then
+            (
+                tcpWrite(clientTcp, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n", 0);
+                tcpClose(clientTcp);
+                0
+            )
+            else
+            handleConnect(clientTcp,
+                strLeft(uri, i),
+                strSlice(uri, i+1, nil),
+                routes)
+        else
+            handleHttp(clientTcp, verb, uri, headers, body, routes));;
+
+//---------- main ----------
+
+fun main()=
+    let if args() <> nil then head(args()) else "proxy.json" -> configFile in
+    let loadConfig(configFile) -> config in
+    if config == nil then 0
+    else
+    let config -> [port, routes] in
+    (
+        echoLn ["[proxy] listening on :", decFromInt(port)];
+        for r in routes do
+            echoLn ["  ", r._pathR,
+                    "  (", decFromInt(r._rateR), " req / ",
+                    decFromInt(r._windowMsR / 1000), "s)"];
+        let tcpSrvCreate(nil, port) -> srv in
+        tcpSrvOnAccept(srv, lambda(clientTcp)=
+            threadStart("proxy-conn", lambda()=
+                handleConnection(clientTcp, routes)
+            )
+        );
+        0
+    );;

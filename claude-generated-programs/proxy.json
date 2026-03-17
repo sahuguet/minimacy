@@ -1,0 +1,9 @@
+{
+  "port": 8080,
+  "routes": [
+    { "path": "https://api.openai.com/", "rate": 5, "window": 60 },
+    { "path": "https://api.anthropic.com/", "rate": 100, "window": 60 },
+    { "path": "https://mcp-proxy.anthropic.com/", "rate": 100, "window": 60 },
+    { "path": "https://storage.googleapis.com/", "rate": 100, "window": 60 }
+  ]
+}
