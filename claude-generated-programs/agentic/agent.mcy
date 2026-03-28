@@ -1,11 +1,12 @@
 // Minimacy Agentic Loop — agent.mcy
-// Interactive shell backed by Claude API with native tool dispatch.
+// Interactive shell backed by Claude API with native + MCP tool dispatch.
 //
 // Usage:
-//   minimacyMac agent.mcy --key <API_KEY> [--model <MODEL>] [--tokens <N>]
+//   minimacyMac agent.mcy --key <API_KEY> [--model <MODEL>] [--tokens <N>] [--mcp <file>]
 //
-// Available tools: read_file, write_file, list_files, http_fetch, get_time
-// Shell commands:  /exit
+// Native tools:  read_file, write_file, list_files, http_fetch, get_time
+// MCP tools:     discovered at startup from servers listed in mcp.json (or --mcp <file>)
+// Shell commands: /exit
 
 use core.util.json;;
 use core.net.http.cli;;
@@ -14,23 +15,32 @@ const ANTHROPIC_URL     = "https://api.anthropic.com/v1/messages";;
 const ANTHROPIC_VERSION = "2023-06-01";;
 const DEFAULT_MODEL     = "claude-opus-4-6";;
 const DEFAULT_MAX_TOKENS = 4096;;
+const DEFAULT_MCP_CONFIG = "mcp.json";;
 const MAX_TOOL_DEPTH    = 10;;
 
 const SYSTEM_PROMPT =
     "You are a helpful AI assistant running inside the Minimacy bare-metal environment. \
 You have access to tools for reading/writing files, making HTTP requests, and checking the time. \
+Additional tools may be available from connected MCP servers. \
 Use tools whenever they help you answer accurately.";;
+
+//---------- MCP state (populated at startup) ----------
+
+var _McpTools  = nil;;  // list Json  — Claude-format tool defs from MCP servers
+var _McpRoutes = nil;;  // hashmap Str -> [Str list] — toolName -> [url, headers]
+var _McpReqId  = 0;;
 
 //---------- argument parsing ----------
 
-// Returns [apiKey, model, maxTokens]
-fun parseArgs(l, key, model, maxTokens)=
-    if l==nil then [key, model, maxTokens]
+// Returns [apiKey, model, maxTokens, mcpConfig]
+fun parseArgs(l, key, model, maxTokens, mcpConfig)=
+    if l==nil then [key, model, maxTokens, mcpConfig]
     else let head(l)->a in let tail(l)->rest in
-    if a=="--key"    && rest<>nil then parseArgs(tail(rest), head(rest), model, maxTokens)
-    else if a=="--model"  && rest<>nil then parseArgs(tail(rest), key, head(rest), maxTokens)
-    else if a=="--tokens" && rest<>nil then parseArgs(tail(rest), key, model, intFromDec(head(rest)))
-    else parseArgs(rest, key, model, maxTokens);;
+    if a=="--key"    && rest<>nil then parseArgs(tail(rest), head(rest), model, maxTokens, mcpConfig)
+    else if a=="--model"  && rest<>nil then parseArgs(tail(rest), key, head(rest), maxTokens, mcpConfig)
+    else if a=="--tokens" && rest<>nil then parseArgs(tail(rest), key, model, intFromDec(head(rest)), mcpConfig)
+    else if a=="--mcp"    && rest<>nil then parseArgs(tail(rest), key, model, maxTokens, head(rest))
+    else parseArgs(rest, key, model, maxTokens, mcpConfig);;
 
 //---------- tool schema builders ----------
 
@@ -58,8 +68,9 @@ fun toolDef(name, desc, props, required)=
         nil
     );;
 
+// Native tools + any tools discovered from MCP servers.
 fun buildTools()=
-    jsonList(
+    let
         toolDef("read_file",
             "Read the full contents of a file from disk.",
             jsonStrProp("path", "Absolute or relative file path to read.")::nil,
@@ -86,9 +97,10 @@ fun buildTools()=
             nil, nil
         )::
         nil
-    );;
+    ->nativeTools in
+    jsonList(listConcat(nativeTools, if _McpTools<>nil then _McpTools else nil));;
 
-//---------- tool dispatcher ----------
+//---------- native tool dispatcher ----------
 
 fun dispatchTool(name, inputJson)=
     if name=="read_file" then
@@ -128,7 +140,14 @@ fun dispatchTool(name, inputJson)=
     else if name=="get_time" then
         fullDate(time())
     else
-        strBuild({"[agent] unknown tool: ", name});;
+        // Fall through to MCP router.
+        if _McpRoutes<>nil then
+        let hashmapGet(_McpRoutes, name)->route in
+        if route<>nil then
+        let route->[url, headers] in
+        mcpCall(url, headers, name, inputJson)
+        else strBuild({"[agent] unknown tool: ", name})
+        else strBuild({"[agent] unknown tool: ", name});;
 
 //---------- JSON message helpers ----------
 
@@ -188,9 +207,9 @@ fun parseResponse(body)=
     let _parseBlocks(arr, 0, "", nil)->[text, tools] in
     [contentJson, text, listReverse(tools)];;
 
-//---------- HTTP ----------
+//---------- Claude HTTP ----------
 
-fun sendRequest(apiKey, model, maxTokens, messages)=
+fun _sendOnce(apiKey, model, maxTokens, messages)=
     let httpCreate("POST", ANTHROPIC_URL, "HTTP/1.0")->h in
     (
         httpSetHeader(h, "Content-Type",      "application/json");
@@ -200,9 +219,221 @@ fun sendRequest(apiKey, model, maxTokens, messages)=
         let await(lambda(join)=
             httpSend(h, lambda(code, data)= joinSend(join, [code, data]))
         )->[code, data] in
-        if code==nil then (echoLn "[Error: connection failed]"; nil)
-        else if code<>200 then (echoLn ["[Error HTTP ", decFromInt(code), "]"]; nil)
-        else parseResponse(data)
+        [code, data]
+    );;
+
+// Retry on 429 with exponential backoff (2s, 4s, 8s).
+fun sendRequest(apiKey, model, maxTokens, messages)=
+    let _sendOnce(apiKey, model, maxTokens, messages)->[code, data] in
+    let if code==429 then (echoLn "  [rate limit] waiting 2s...";  sleepMs(2000);  _sendOnce(apiKey, model, maxTokens, messages)) else [code, data]->[code, data] in
+    let if code==429 then (echoLn "  [rate limit] waiting 4s...";  sleepMs(4000);  _sendOnce(apiKey, model, maxTokens, messages)) else [code, data]->[code, data] in
+    let if code==429 then (echoLn "  [rate limit] waiting 8s...";  sleepMs(8000);  _sendOnce(apiKey, model, maxTokens, messages)) else [code, data]->[code, data] in
+    if code==nil then (echoLn "[Error: connection failed]"; nil)
+    else if code<>200 then (echoLn ["[Error HTTP ", decFromInt(code), "]"]; nil)
+    else parseResponse(data);;
+
+//---------- MCP client ----------
+
+var _McpSessions = nil;;  // hashmap Str -> Str  (url -> sessionId, or "" if none)
+
+fun _mcpNextId()= (set _McpReqId=_McpReqId+1; _McpReqId);;
+
+// Parse one ["Key", "Value"] header pair from a JSON array.
+fun _parseHeader(pair)=
+    let try jsonArrayGet(pair)->arr in
+    if arr<>nil && arrayLength(arr)>=2 then
+    let jsonStringGet(arr[0])->k in
+    let jsonStringGet(arr[1])->v in
+    if k<>nil && v<>nil then [k, v];;
+
+// Extract "host" or "host:port" from a URL like "http://host:port/path".
+fun _urlHost(url)=
+    let strPos(url, "://", 0)->i in
+    let strSlice(url, if i<>nil then i+3 else 0, nil)->rest in
+    let strPos(rest, "/", 0)->j in
+    if j<>nil then strLeft(rest, j) else rest;;
+
+// Low-level HTTP POST with MCP headers.
+// Returns [statusCode, responseBody, mcp-session-id from response header].
+fun _mcpHttpPost(url, headers, sessionId, body)=
+    let try (
+        let httpCreate("POST", url, "HTTP/1.1")->h in
+        (
+            httpSetHeader(h, "Content-Type", "application/json");
+            httpSetHeader(h, "Accept",       "application/json, text/event-stream");
+            httpSetHeader(h, "Host",         _urlHost(url));
+            if !strEmpty(sessionId) then httpSetHeader(h, "mcp-session-id", sessionId);
+            for [key, val] in headers do httpSetHeader(h, key, val);
+            httpSetPostData(h, body);
+            let await(lambda(join)=
+                httpSend(h, lambda(code, data)= joinSend(join, [code, data]))
+            )->[code, data] in
+            [code, data, httpGetHeader(h, "mcp-session-id")]
+        )
+    )->r in r;;
+
+// Parse MCP response body: tries plain JSON first, then SSE "data: {...}" format.
+fun _mcpParseBody(data)=
+    if strEmpty(data) then nil
+    else
+    let try jsonParse(data, 0)->[json, _] in
+    if json<>nil then json
+    else
+    // SSE format: find the first "data: " line and parse its payload
+    let listFind(strSplit("\n", data), lambda(line)= strStartsWith(strTrim(line), "data:"))->dl in
+    if dl==nil then nil
+    else
+    let strPos(dl, "data:", 0)->i in
+    try let jsonParse(strTrim(strSlice(dl, i+5, nil)), 0)->[json, _] in json;;
+
+// Perform the MCP initialize + initialized handshake; store session ID.
+// Returns session ID string ("" if server sends none), or nil on failure.
+fun _mcpInitialize(url, headers)=
+    let jsonEncode(jsonObject(
+        ["jsonrpc", jsonString "2.0"]::
+        ["id",      jsonInt(_mcpNextId())]::
+        ["method",  jsonString "initialize"]::
+        ["params",  jsonObject(
+            ["protocolVersion", jsonString "2024-11-05"]::
+            ["capabilities",    jsonObject nil]::
+            ["clientInfo",      jsonObject(
+                ["name",    jsonString "minimacy-agent"]::
+                ["version", jsonString "1.0"]::
+                nil
+            )]::
+            nil
+        )]::
+        nil
+    ))->initBody in
+    let _mcpHttpPost(url, headers, nil, initBody)->resp in
+    if resp==nil then (echoLn "  [mcp] connection failed"; nil)
+    else
+    let resp->[code, _, sid] in
+    if code<>200 then
+        (echoLn ["  [mcp] initialize failed: HTTP ", decFromInt(code)]; nil)
+    else
+    let if sid<>nil then sid else "" ->sid in
+    (
+        hashmapSet(_McpSessions, url, sid);
+        // Send "initialized" notification (no id = notification, response ignored).
+        let jsonEncode(jsonObject(
+            ["jsonrpc", jsonString "2.0"]::
+            ["method",  jsonString "notifications/initialized"]::
+            ["params",  jsonObject nil]::
+            nil
+        ))->notifBody in
+        _mcpHttpPost(url, headers, sid, notifBody);
+        sid
+    );;
+
+// Return the session ID for url, running the initialize handshake if needed.
+// Returns nil on failure, "" if initialized with no session ID, or the ID string.
+fun _mcpSession(url, headers)=
+    if _McpSessions==nil then set _McpSessions=hashmapCreate(4);
+    let hashmapGet(_McpSessions, url)->sid in
+    if sid<>nil then sid   // already initialized
+    else _mcpInitialize(url, headers);;
+
+// JSON-RPC 2.0 call to an MCP server; returns the "result" field or nil on error.
+fun mcpRpc(url, headers, method, params)=
+    let _mcpSession(url, headers)->sid in
+    if sid==nil then nil
+    else
+    let jsonEncode(jsonObject(
+        ["jsonrpc", jsonString "2.0"]::
+        ["id",      jsonInt(_mcpNextId())]::
+        ["method",  jsonString method]::
+        ["params",  if params<>nil then params else jsonObject nil]::
+        nil
+    ))->body in
+    let _mcpHttpPost(url, headers, sid, body)->resp in
+    if resp==nil then nil
+    else
+    let resp->[code, data, _] in
+    if code<>200 then nil
+    else
+    let _mcpParseBody(data)->json in
+    if json<>nil then jsonFieldGet(json, "result");;
+
+// Extract plain text from an MCP tools/call result content array.
+fun _mcpResultText(result)=
+    if result==nil then "[mcp] nil result"
+    else
+    let try jsonListGet(jsonFieldGet(result, "content"))->blocks in
+    if blocks==nil then "[mcp] empty content"
+    else
+    let strJoin("\n", listMap(blocks, lambda(b)=
+        if "text"==jsonStringGet(jsonFieldGet(b, "type")) then
+            jsonStringGet(jsonFieldGet(b, "text"))
+    ))->text in
+    if text<>nil then text else "[mcp] no text content";;
+
+// Call tools/call on an MCP server; return result as string.
+fun mcpCall(url, headers, name, inputJson)=
+    _mcpResultText(mcpRpc(url, headers, "tools/call",
+        jsonObject(
+            ["name",      jsonString name]::
+            ["arguments", if inputJson<>nil then inputJson else jsonObject nil]::
+            nil
+        )
+    ));;
+
+// Call tools/list on one MCP server; register routes in _McpRoutes;
+// return list of Claude-format tool defs (converts inputSchema -> input_schema).
+fun _mcpDiscoverServer(url, headers)=
+    let mcpRpc(url, headers, "tools/list", nil)->result in
+    if result==nil then (echoLn ["  [mcp] unreachable: ", url]; nil)
+    else
+    let try jsonListGet(jsonFieldGet(result, "tools"))->tools in
+    if tools==nil then nil
+    else
+    listMap(tools, lambda(t)=
+        let jsonStringGet(jsonFieldGet(t, "name"))->tname in
+        let jsonStringGet(jsonFieldGet(t, "description"))->desc in
+        let jsonFieldGet(t, "inputSchema")->schema in
+        if tname==nil then nil
+        else
+        (
+            hashmapSet(_McpRoutes, tname, [url, headers]);
+            jsonObject(
+                ["name",         jsonString tname]::
+                ["description",  jsonString(if desc<>nil then desc else "")]::
+                ["input_schema", if schema<>nil then schema else jsonObject nil]::
+                nil
+            )
+        )
+    );;
+
+// Load mcp.json; connect to all servers; populate _McpTools and _McpRoutes.
+fun loadMcp(configFile)=
+    let load(configFile)->data in
+    if data==nil then 0  // no config file — silently skip
+    else
+    let try jsonParse(data, 0)->[json, _] in
+    if json==nil then (echoLn ["[mcp] parse error in ", configFile]; 0)
+    else
+    let try jsonListGet(jsonFieldGet(json, "servers"))->servers in
+    if servers==nil then (echoLn "[mcp] no servers in config"; 0)
+    else
+    (
+        set _McpRoutes = hashmapCreate(8);
+        for s in servers do
+            let jsonStringGet(jsonFieldGet(s, "url"))->url in
+            let jsonStringGet(jsonFieldGet(s, "name"))->sname in
+            let try jsonListGet(jsonFieldGet(s, "headers"))->rawHdrs in
+            let listMap(if rawHdrs<>nil then rawHdrs else nil, #_parseHeader)->hdrs in
+            if url<>nil then
+            (
+                echoLn ["  [mcp] ", if sname<>nil then sname else url, " — connecting..."];
+                let _mcpDiscoverServer(url, hdrs)->tools in
+                let listLength(if tools<>nil then tools else nil)->n in
+                (
+                    echoLn ["  [mcp] ", if sname<>nil then sname else url,
+                            " — ", decFromInt(n), " tools"];
+                    set _McpTools = listConcat(_McpTools, if tools<>nil then tools else nil)
+                )
+            );
+        0
     );;
 
 //---------- agentic loop ----------
@@ -283,18 +514,23 @@ fun shellLoop(apiKey, model, maxTokens, history)=
 //---------- entry point ----------
 
 fun main()=
-    let parseArgs(args(), nil, DEFAULT_MODEL, DEFAULT_MAX_TOKENS)->[apiKey, model, maxTokens] in
+    let parseArgs(args(), nil, DEFAULT_MODEL, DEFAULT_MAX_TOKENS, DEFAULT_MCP_CONFIG)
+        ->[apiKey, model, maxTokens, mcpConfig] in
     if apiKey==nil then
     (
-        echoLn "Usage: minimacyMac agent.mcy --key <KEY> [--model <MODEL>] [--tokens <N>]";
+        echoLn "Usage: minimacyMac agent.mcy --key <KEY> [--model <MODEL>] [--tokens <N>] [--mcp <file>]";
         echoLn ["  Default model  : ", DEFAULT_MODEL];
         echoLn ["  Default tokens : ", decFromInt(DEFAULT_MAX_TOKENS)];
+        echoLn ["  Default mcp    : ", DEFAULT_MCP_CONFIG];
         0
     )
     else
     (
         echoLn ["Minimacy Agent | model: ", model, " | max_tokens: ", decFromInt(maxTokens)];
-        echoLn "Tools: read_file  write_file  list_files  http_fetch  get_time";
+        echoLn "Native tools: read_file  write_file  list_files  http_fetch  get_time";
+        loadMcp(mcpConfig);
+        let listLength(if _McpTools<>nil then _McpTools else nil)->nMcp in
+        if nMcp>0 then echoLn ["MCP tools: ", decFromInt(nMcp), " from ", mcpConfig];
         echoLn "Type /exit to quit.";
         echoLn "";
         shellLoop(apiKey, model, maxTokens, nil);
